@@ -18,8 +18,15 @@ function QRScanner({ onScanSuccess, onScanError }) {
       (decodedText) => {
         onScanSuccess(decodedText);
       },
-      (_errorMessage) => {
+      (errorMessage) => {
         if (onScanError) {
+          const normalized = String(errorMessage || '').toLowerCase();
+
+          if (normalized.includes('permission') || normalized.includes('notallowederror')) {
+            onScanError('Camera permission denied. Please allow camera access and refresh.');
+            return;
+          }
+
           onScanError('Scanning in progress...');
         }
       }

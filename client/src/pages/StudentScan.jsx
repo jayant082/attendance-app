@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import QRScanner from '../components/QRScanner';
 import api from '../lib/api';
 import { clearAuth, getStoredUser } from '../lib/auth';
@@ -8,7 +8,59 @@ function StudentScan() {
   const navigate = useNavigate();
   const user = getStoredUser();
   const [status, setStatus] = useState('Scan your class QR to mark attendance.');
+  const [scannerState, setScannerState] = useState('idle');
   const [scanLocked, setScanLocked] = useState(false);
+  const [manualPayload, setManualPayload] = useState('');
+  const [selfieHash, setSelfieHash] = useState('');
+  const [location, setLocation] = useState({ latitude: null, longitude: null });
+
+  const deviceId = useMemo(() => {
+    const key = 'attendanceDeviceId';
+    const existing = localStorage.getItem(key);
+    if (existing) {
+      return existing;
+    }
+    const next = `dev-${crypto.randomUUID()}`;
+    localStorage.setItem(key, next);
+    return next;
+  }, []);
+
+  const refreshLocation = () => {
+    if (!navigator.geolocation) {
+      setStatus('Geolocation is not available in this browser.');
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setLocation({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude
+        });
+      },
+      () => {
+        setStatus('Unable to fetch your location.');
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  };
+
+  const onSelfieFile = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const buffer = await file.arrayBuffer();
+      const digest = await crypto.subtle.digest('SHA-256', buffer);
+      const hashArray = Array.from(new Uint8Array(digest));
+      const hashHex = hashArray.map((item) => item.toString(16).padStart(2, '0')).join('');
+      setSelfieHash(hashHex);
+      setStatus('Selfie proof attached successfully.');
+    } catch (_error) {
+      setStatus('Unable to process selfie proof file.');
+      setScannerState('error');
+    }
+  };
 
   const statusColor = useMemo(() => {
     if (status.toLowerCase().includes('success')) return 'text-green-600';
@@ -30,44 +82,124 @@ function StudentScan() {
       }
 
       setScanLocked(true);
+      setScannerState('submitting');
       setStatus('Submitting attendance...');
 
       try {
-        const { data } = await api.post('/api/attendance/mark', { qrData: decodedText });
+        const { data } = await api.post('/api/attendance/mark', {
+          qrData: decodedText,
+          latitude: location.latitude,
+          longitude: location.longitude,
+          deviceId,
+          selfieHash: selfieHash || null
+        });
         setStatus(data.message || 'Attendance marked successfully.');
+        setScannerState('success');
       } catch (error) {
         const message = error.response?.data?.message || 'Attendance marking failed.';
         setStatus(message);
+        setScannerState('error');
       } finally {
-        setTimeout(() => setScanLocked(false), 3000);
+        setTimeout(() => {
+          setScanLocked(false);
+          setScannerState('idle');
+        }, 3000);
       }
     },
     [scanLocked]
   );
 
-  const onScanError = useCallback(() => {
+  const onScanError = useCallback((message) => {
+    if (message && message.toLowerCase().includes('permission')) {
+      setStatus(message);
+      setScannerState('error');
+    }
+
     return null;
   }, []);
 
+  const submitManualPayload = async (event) => {
+    event.preventDefault();
+
+    if (!manualPayload.trim()) {
+      setStatus('Please paste a valid payload first.');
+      setScannerState('error');
+      return;
+    }
+
+    setScannerState('submitting');
+    setStatus('Submitting attendance...');
+
+    try {
+      const { data } = await api.post('/api/attendance/mark-manual', {
+        payload: manualPayload.trim(),
+        latitude: location.latitude,
+        longitude: location.longitude,
+        deviceId,
+        selfieHash: selfieHash || null
+      });
+      setStatus(data.message || 'Attendance marked successfully.');
+      setScannerState('success');
+      setManualPayload('');
+    } catch (error) {
+      setStatus(error.response?.data?.message || 'Manual attendance submission failed.');
+      setScannerState('error');
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-slate-100">
-      <header className="border-b border-slate-200 bg-white">
+    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100">
+      <header className="border-b border-slate-200 bg-white/90 backdrop-blur">
         <div className="mx-auto flex max-w-4xl items-center justify-between px-4 py-4">
           <div>
-            <h1 className="text-xl font-bold text-slate-800">Student Scanner</h1>
+            <h1 className="text-xl font-bold text-slate-900">Student Scanner</h1>
             <p className="text-sm text-slate-600">Logged in as {user?.email}</p>
           </div>
-          <button onClick={logout} className="rounded-lg bg-slate-800 px-4 py-2 text-white text-sm hover:bg-slate-900">
-            Logout
-          </button>
+          <div className="flex gap-2">
+            <Link to="/student/history" className="rounded-lg bg-indigo-600 px-4 py-2 text-sm text-white hover:bg-indigo-700">
+              My History
+            </Link>
+            <button onClick={logout} className="rounded-lg bg-slate-800 px-4 py-2 text-white text-sm hover:bg-slate-900">
+              Logout
+            </button>
+          </div>
         </div>
       </header>
 
       <main className="mx-auto max-w-4xl px-4 py-6">
-        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-semibold text-slate-800 mb-4">Scan Attendance QR</h2>
+        <div className="rounded-2xl border border-slate-200 bg-white/95 p-6 shadow-sm backdrop-blur">
+          <h2 className="mb-2 text-lg font-semibold text-slate-900">Scan Attendance QR</h2>
+          <p className="mb-4 text-sm text-slate-500">Keep the QR steady and well-lit for faster detection.</p>
           <QRScanner onScanSuccess={onScanSuccess} onScanError={onScanError} />
           <p className={`mt-4 text-sm font-medium ${statusColor}`}>{status}</p>
+          <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            Scanner state: {scannerState}
+          </div>
+
+          <div className="mt-4 space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <p className="text-xs font-semibold text-slate-700">Proxy protection checks</p>
+            <button type="button" onClick={refreshLocation} className="rounded bg-indigo-600 px-3 py-2 text-xs text-white">
+              Refresh Location
+            </button>
+            <p className="text-xs text-slate-600">
+              Location: {location.latitude ? `${location.latitude.toFixed(4)}, ${location.longitude.toFixed(4)}` : 'Not captured'}
+            </p>
+            <input type="file" accept="image/*" onChange={onSelfieFile} className="block text-xs text-slate-700" />
+            <p className="text-xs text-slate-600">Selfie hash: {selfieHash ? `${selfieHash.slice(0, 12)}...` : 'Not attached'}</p>
+          </div>
+
+          <form onSubmit={submitManualPayload} className="mt-4 space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <p className="text-xs font-semibold text-slate-700">Camera not working? Paste payload shared by teacher</p>
+            <textarea
+              value={manualPayload}
+              onChange={(event) => setManualPayload(event.target.value)}
+              placeholder='{"sessionId":"...","expiresAt":"...","signature":"..."}'
+              className="min-h-24 w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+            <button type="submit" className="rounded-lg bg-slate-800 px-3 py-2 text-xs font-medium text-white hover:bg-slate-900">
+              Submit Payload
+            </button>
+          </form>
         </div>
       </main>
     </div>

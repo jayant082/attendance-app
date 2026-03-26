@@ -6,8 +6,8 @@ function QRGenerator({ payload }) {
   }
 
   return (
-    <div className="rounded-xl bg-white p-6 shadow-sm border border-slate-200 w-full max-w-sm">
-      <h3 className="text-lg font-semibold text-slate-800 mb-3">Session QR Code</h3>
+    <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white/95 p-6 shadow-sm backdrop-blur">
+      <h3 className="mb-3 text-lg font-semibold text-slate-900">Session QR Code</h3>
       <div className="flex justify-center rounded-lg bg-slate-50 p-4">
         <QRCodeCanvas value={JSON.stringify(payload)} size={240} includeMargin />
       </div>

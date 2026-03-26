@@ -1,3 +1,24 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+	html,
+	body,
+	#root {
+		@apply min-h-screen bg-slate-100 text-slate-900 antialiased;
+	}
+
+	button,
+	input,
+	select {
+		@apply transition duration-150;
+	}
+
+	button:focus-visible,
+	input:focus-visible,
+	select:focus-visible,
+	a:focus-visible {
+		@apply outline-none ring-2 ring-indigo-500 ring-offset-2;
+	}
+}
