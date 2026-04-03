@@ -297,7 +297,7 @@ function TeacherDashboard() {
           </form>
 
           {sessionData?.session && (
-            <div className="mt-6 space-y-2 rounded-lg border border-indigo-200 bg-indigo-50 p-4">
+            <div className="mt-6 space-y-3 rounded-lg border border-indigo-200 bg-indigo-50 p-4">
               <p className="text-sm text-indigo-800">
                 Session ID: <span className="font-semibold">{sessionData.session.id}</span>
               </p>
@@ -305,8 +305,21 @@ function TeacherDashboard() {
                 Expires At: <span className="font-semibold">{new Date(sessionData.session.expires_at).toLocaleString()}</span>
               </p>
               <p className="text-sm text-indigo-800">
-                Countdown: <span className="font-semibold">{minutes}:{seconds}</span>
+                Countdown: <span className="font-semibold text-lg text-indigo-700">{minutes}:{seconds}</span>
               </p>
+              <div className="rounded-lg bg-white p-3 border border-indigo-100">
+                <p className="text-xs font-semibold text-slate-700 mb-2">📋 If QR camera scan fails, share this payload:</p>
+                <p className="text-xs font-mono text-slate-600 break-all bg-slate-50 p-2 rounded border border-slate-200">
+                  {JSON.stringify(sessionData.qrPayload)}
+                </p>
+                <button
+                  type="button"
+                  onClick={copyPayload}
+                  className="mt-2 w-full rounded-lg bg-slate-700 px-3 py-2 text-xs font-medium text-white hover:bg-slate-800"
+                >
+                  Copy Payload to Share
+                </button>
+              </div>
               <div className="flex flex-wrap gap-2">
                 <Link
                   to={`/report/${sessionData.session.id}`}
@@ -329,13 +342,6 @@ function TeacherDashboard() {
                   className="rounded-lg bg-rose-600 px-3 py-2 text-sm font-medium text-white hover:bg-rose-700 disabled:opacity-60"
                 >
                   End Session
-                </button>
-                <button
-                  type="button"
-                  onClick={copyPayload}
-                  className="rounded-lg bg-slate-800 px-3 py-2 text-sm font-medium text-white hover:bg-slate-900"
-                >
-                  Copy Payload
                 </button>
               </div>
             </div>

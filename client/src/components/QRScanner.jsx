@@ -8,22 +8,30 @@ function QRScanner({ onScanSuccess, onScanError }) {
     const scanner = new Html5QrcodeScanner(
       scannerId,
       {
-        fps: 10,
-        qrbox: { width: 250, height: 250 }
+        fps: 20,
+        qrbox: { width: 350, height: 350 },
+        disableFlip: false
       },
       false
     );
 
     scanner.render(
       (decodedText) => {
+        console.log('QR Code Scanned Successfully:', decodedText); // Debug logging
         onScanSuccess(decodedText);
       },
       (errorMessage) => {
+        console.log('QR Scanner Error:', errorMessage); // Debug logging
         if (onScanError) {
           const normalized = String(errorMessage || '').toLowerCase();
 
           if (normalized.includes('permission') || normalized.includes('notallowederror')) {
             onScanError('Camera permission denied. Please allow camera access and refresh.');
+            return;
+          }
+
+          if (normalized.includes('nomultiformat') || normalized.includes('detect')) {
+            onScanError('QR code not detected. Ensure the code is clear and well-lit.');
             return;
           }
 

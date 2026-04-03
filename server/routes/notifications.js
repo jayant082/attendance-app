@@ -17,7 +17,7 @@ const buildAbsenteeNotification = async (sessionId) => {
 
   const { data: enrollments, error: enrollmentsError } = await supabase
     .from('enrollments')
-    .select('student_id, profiles(full_name)')
+    .select('student_id')
     .eq('subject_id', session.subject_id);
 
   if (enrollmentsError) {

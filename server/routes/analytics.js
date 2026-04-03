@@ -102,11 +102,24 @@ router.get('/subject/:subjectId/defaulters', verifyToken, async (req, res) => {
 
     const { data: enrollments, error: enrollmentsError } = await supabase
       .from('enrollments')
-      .select('student_id, roll_number, profiles(full_name)')
+      .select('student_id, roll_number')
       .eq('subject_id', subjectId);
 
     if (enrollmentsError) {
       return res.status(500).json({ message: 'Failed to load enrollments.', error: enrollmentsError.message });
+    }
+
+    // Fetch student profiles
+    const studentIds = (enrollments || []).map(e => e.student_id);
+    let studentProfiles = {};
+    if (studentIds.length > 0) {
+      const { data: profiles, error: profilesError } = await supabase
+        .from('profiles')
+        .select('user_id, full_name')
+        .in('user_id', studentIds);
+      if (!profilesError && profiles) {
+        studentProfiles = Object.fromEntries(profiles.map(p => [p.user_id, p]));
+      }
     }
 
     const sessionIds = sessions.map((session) => session.id);
@@ -128,9 +141,10 @@ router.get('/subject/:subjectId/defaulters', verifyToken, async (req, res) => {
     const reportRows = (enrollments || []).map((enrollment) => {
       const presentCount = byStudent[enrollment.student_id] || 0;
       const percentage = totalSessions === 0 ? 0 : Number(((presentCount / totalSessions) * 100).toFixed(2));
+      const profile = studentProfiles[enrollment.student_id];
       return {
         studentId: enrollment.student_id,
-        studentName: enrollment.profiles?.full_name || 'Student',
+        studentName: profile?.full_name || 'Student',
         rollNumber: enrollment.roll_number || 'N/A',
         presentCount,
         totalSessions,
@@ -175,11 +189,29 @@ router.get('/session/:sessionId/absentees', verifyToken, async (req, res) => {
 
     const { data: enrollments, error: enrollmentsError } = await supabase
       .from('enrollments')
-      .select('student_id, roll_number, profiles(full_name, phone)')
+      .select('student_id, roll_number')
       .eq('subject_id', session.subject_id);
 
     if (enrollmentsError) {
       return res.status(500).json({ message: 'Failed to load enrolled students.', error: enrollmentsError.message });
+    }
+
+    // Fetch student profiles for the enrolled students
+    const studentIds = (enrollments || []).map(e => e.student_id);
+    let studentProfiles = {};
+    
+    if (studentIds.length > 0) {
+      const { data: profiles, error: profilesError } = await supabase
+        .from('profiles')
+        .select('user_id, full_name, phone')
+        .in('user_id', studentIds);
+
+      if (profilesError) {
+        console.error('Error loading student profiles:', profilesError);
+        // Continue without profiles rather than failing completely
+      } else {
+        studentProfiles = Object.fromEntries((profiles || []).map(p => [p.user_id, p]));
+      }
     }
 
     const { data: marks, error: marksError } = await supabase
@@ -195,12 +227,15 @@ router.get('/session/:sessionId/absentees', verifyToken, async (req, res) => {
     const presentSet = new Set((marks || []).map((mark) => mark.student_id));
     const absentees = (enrollments || [])
       .filter((enrollment) => !presentSet.has(enrollment.student_id))
-      .map((enrollment) => ({
-        studentId: enrollment.student_id,
-        studentName: enrollment.profiles?.full_name || 'Student',
-        rollNumber: enrollment.roll_number || 'N/A',
-        phone: enrollment.profiles?.phone || ''
-      }));
+      .map((enrollment) => {
+        const profile = studentProfiles[enrollment.student_id];
+        return {
+          studentId: enrollment.student_id,
+          studentName: profile?.full_name || 'Student',
+          rollNumber: enrollment.roll_number || 'N/A',
+          phone: profile?.phone || ''
+        };
+      });
 
     return res.status(200).json({ sessionId, absentees, count: absentees.length });
   } catch (error) {

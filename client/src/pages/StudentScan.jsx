@@ -110,7 +110,7 @@ function StudentScan() {
   );
 
   const onScanError = useCallback((message) => {
-    if (message && message.toLowerCase().includes('permission')) {
+    if (message && (message.toLowerCase().includes('permission') || message.toLowerCase().includes('not detected'))) {
       setStatus(message);
       setScannerState('error');
     }
@@ -169,34 +169,47 @@ function StudentScan() {
       <main className="mx-auto max-w-4xl px-4 py-6">
         <div className="rounded-2xl border border-slate-200 bg-white/95 p-6 shadow-sm backdrop-blur">
           <h2 className="mb-2 text-lg font-semibold text-slate-900">Scan Attendance QR</h2>
-          <p className="mb-4 text-sm text-slate-500">Keep the QR steady and well-lit for faster detection.</p>
+          <p className="mb-4 text-sm text-slate-500">Position the QR code in good lighting for faster detection.</p>
           <QRScanner onScanSuccess={onScanSuccess} onScanError={onScanError} />
           <p className={`mt-4 text-sm font-medium ${statusColor}`}>{status}</p>
-          <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-            Scanner state: {scannerState}
-          </div>
+          
+          {/* Fallback instructions - prominent when scanner is not working */}
+          {scannerState === 'error' && (
+            <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
+              <p className="text-sm font-semibold text-amber-900 mb-2">❌ Scanner Issue Detected</p>
+              <p className="text-xs text-amber-800 mb-3">
+                {status.includes('permission') 
+                  ? 'Camera access is required. Please allow camera permissions and refresh the page.'
+                  : status.includes('not detected')
+                  ? 'No QR code detected. Make sure the QR code is visible, well-lit, and not too far from the camera.'
+                  : 'Try the manual payload option below if scanning continues to fail.'
+                }
+              </p>
+            </div>
+          )}
 
           <div className="mt-4 space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
-            <p className="text-xs font-semibold text-slate-700">Proxy protection checks</p>
-            <button type="button" onClick={refreshLocation} className="rounded bg-indigo-600 px-3 py-2 text-xs text-white">
+            <p className="text-xs font-semibold text-slate-700">🔐 Device Verification</p>
+            <button type="button" onClick={refreshLocation} className="rounded bg-indigo-600 px-3 py-2 text-xs text-white hover:bg-indigo-700">
               Refresh Location
             </button>
             <p className="text-xs text-slate-600">
-              Location: {location.latitude ? `${location.latitude.toFixed(4)}, ${location.longitude.toFixed(4)}` : 'Not captured'}
+              Location: {location.latitude ? `✓ ${location.latitude.toFixed(4)}, ${location.longitude.toFixed(4)}` : '⚠ Not captured'}
             </p>
             <input type="file" accept="image/*" onChange={onSelfieFile} className="block text-xs text-slate-700" />
-            <p className="text-xs text-slate-600">Selfie hash: {selfieHash ? `${selfieHash.slice(0, 12)}...` : 'Not attached'}</p>
+            <p className="text-xs text-slate-600">Selfie proof: {selfieHash ? `✓ ${selfieHash.slice(0, 12)}...` : '⚠ Not attached (optional)'}</p>
           </div>
 
-          <form onSubmit={submitManualPayload} className="mt-4 space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
-            <p className="text-xs font-semibold text-slate-700">Camera not working? Paste payload shared by teacher</p>
+          <form onSubmit={submitManualPayload} className={`mt-4 space-y-2 rounded-lg border p-3 ${scannerState === 'error' ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-slate-50'}`}>
+            <p className="text-xs font-semibold text-slate-700">📋 Fallback: Manual Payload Entry</p>
+            <p className="text-xs text-slate-600">If QR scanning isn't working, ask your teacher to share the payload below:</p>
             <textarea
               value={manualPayload}
               onChange={(event) => setManualPayload(event.target.value)}
               placeholder='{"sessionId":"...","expiresAt":"...","signature":"..."}'
-              className="min-h-24 w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="min-h-20 w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
             />
-            <button type="submit" className="rounded-lg bg-slate-800 px-3 py-2 text-xs font-medium text-white hover:bg-slate-900">
+            <button type="submit" disabled={!manualPayload.trim()} className="w-full rounded-lg bg-slate-800 px-3 py-2 text-xs font-medium text-white hover:bg-slate-900 disabled:opacity-50">
               Submit Payload
             </button>
           </form>

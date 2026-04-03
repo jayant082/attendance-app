@@ -69,9 +69,9 @@ router.get('/subject/:subjectId/students', verifyToken, async (req, res) => {
       }
     }
 
-    const { data, error } = await supabase
+    const { data: enrollments, error } = await supabase
       .from('enrollments')
-      .select('id, student_id, roll_number, profiles(full_name, phone)')
+      .select('id, student_id, roll_number')
       .eq('subject_id', subjectId)
       .order('roll_number', { ascending: true });
 
@@ -79,14 +79,30 @@ router.get('/subject/:subjectId/students', verifyToken, async (req, res) => {
       return res.status(500).json({ message: 'Failed to load roster.', error: error.message });
     }
 
+    // Fetch student profiles
+    const studentIds = (enrollments || []).map(e => e.student_id);
+    let studentProfiles = {};
+    if (studentIds.length > 0) {
+      const { data: profiles, error: profilesError } = await supabase
+        .from('profiles')
+        .select('user_id, full_name, phone')
+        .in('user_id', studentIds);
+      if (!profilesError && profiles) {
+        studentProfiles = Object.fromEntries(profiles.map(p => [p.user_id, p]));
+      }
+    }
+
     return res.status(200).json({
-      students: (data || []).map((row) => ({
-        enrollmentId: row.id,
-        studentId: row.student_id,
-        rollNumber: row.roll_number || 'N/A',
-        studentName: row.profiles?.full_name || 'Student',
-        phone: row.profiles?.phone || ''
-      }))
+      students: (enrollments || []).map((row) => {
+        const profile = studentProfiles[row.student_id];
+        return {
+          enrollmentId: row.id,
+          studentId: row.student_id,
+          rollNumber: row.roll_number || 'N/A',
+          studentName: profile?.full_name || 'Student',
+          phone: profile?.phone || ''
+        };
+      })
     });
   } catch (error) {
     return res.status(500).json({ message: 'Server error while loading roster.', error: error.message });
