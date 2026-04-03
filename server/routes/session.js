@@ -1,7 +1,8 @@
 const express = require('express');
 const crypto = require('crypto');
-const supabase = require('../lib/supabase');
+const supabase = require('../lib/supabase.js');
 const verifyToken = require('../middleware/verifyToken');
+
 
 const router = express.Router();
 
@@ -123,24 +124,29 @@ router.post('/create', verifyToken, async (req, res) => {
     const resolvedRadius = radiusMeters ?? slotGeo.radiusMeters;
 
     const { data, error } = await supabase
-      .from('sessions')
-      .insert({
-        teacher_id: req.user.id,
-        subject,
-        subject_id: subjectId || null,
-        timetable_slot_id: resolvedSlotId,
-        expires_at: expiresAt,
-        latitude: resolvedLatitude ?? null,
-        longitude: resolvedLongitude ?? null,
-        radius_meters: resolvedRadius ?? null,
-        requires_selfie: Boolean(requiresSelfie)
-      })
-      .select('id, subject, subject_id, created_at, expires_at, latitude, longitude, radius_meters, requires_selfie')
+    .from('sessions')
+    .insert([{
+      teacher_id: req.user.id,
+      subject,
+      subject_id: subjectId || null,
+      timetable_slot_id: resolvedSlotId,
+      expires_at: expiresAt,
+      latitude: resolvedLatitude ?? null,
+      longitude: resolvedLongitude ?? null,
+      radius_meters: resolvedRadius ?? null,
+      requires_selfie: Boolean(requiresSelfie)
+    }]).select('id, subject, subject_id, created_at, expires_at, latitude, longitude, radius_meters, requires_selfie')
       .single();
 
     if (error) {
-      return res.status(500).json({ message: 'Unable to create session.', error: error.message });
-    }
+    console.log("SUPABASE INSERT ERROR:", error); // 👈 ADD THIS
+    console.log("USING KEY:", process.env.SUPABASE_SERVICE_ROLE_KEY?.slice(0, 10));
+    return res.status(500).json({
+      message: 'Unable to create session.',
+      error: error.message
+     
+    });
+  }
 
     const qrPayload = {
       sessionId: data.id,
