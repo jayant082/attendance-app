@@ -187,6 +187,16 @@ router.get('/session/:sessionId/absentees', verifyToken, async (req, res) => {
       return res.status(403).json({ message: 'You can only view your own session absentees.' });
     }
 
+    if (!session.subject_id) {
+      return res.status(200).json({
+        sessionId,
+        absentees: [],
+        count: 0,
+        rosterAvailable: false,
+        message: 'Absentee tracking is unavailable because this session has no subject mapping.'
+      });
+    }
+
     const { data: enrollments, error: enrollmentsError } = await supabase
       .from('enrollments')
       .select('student_id, roll_number')
@@ -237,7 +247,7 @@ router.get('/session/:sessionId/absentees', verifyToken, async (req, res) => {
         };
       });
 
-    return res.status(200).json({ sessionId, absentees, count: absentees.length });
+    return res.status(200).json({ sessionId, absentees, count: absentees.length, rosterAvailable: true });
   } catch (error) {
     return res.status(500).json({ message: 'Server error while loading absentees.', error: error.message });
   }

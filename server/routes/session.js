@@ -2,6 +2,7 @@
   const crypto = require('crypto');
   const supabase = require('../lib/supabase.js');
   const verifyToken = require('../middleware/verifyToken');
+  const { isLatitude, isLongitude, validateLocation } = require('../lib/geofence');
 
 
   const router = express.Router();
@@ -122,6 +123,15 @@
       const resolvedLatitude = latitude ?? slotGeo.latitude;
       const resolvedLongitude = longitude ?? slotGeo.longitude;
       const resolvedRadius = radiusMeters ?? slotGeo.radiusMeters;
+      if ((resolvedLatitude != null && !isLatitude(resolvedLatitude)) ||
+          (resolvedLongitude != null && !isLongitude(resolvedLongitude)) ||
+          !validateLocation({
+            latitude: resolvedLatitude,
+            longitude: resolvedLongitude,
+            radius_meters: resolvedRadius
+          }, resolvedLatitude, resolvedLongitude).ok) {
+        return res.status(400).json({ message: 'Provide valid teacher coordinates and a positive whole-number radius in meters when enabling location checks.' });
+      }
 
       const { data, error } = await supabase
       .from('sessions')
@@ -188,22 +198,54 @@
 
       const sessionsWithCounts = await Promise.all(
         (sessions || []).map(async (session) => {
+          const qrPayload = new Date(session.expires_at).getTime() > Date.now() ? {
+            sessionId: session.id,
+            expiresAt: session.expires_at,
+            signature: signQrPayload(session.id, session.expires_at)
+          } : null;
           const { count, error: countError } = await supabase
             .from('attendance')
             .select('id', { count: 'exact', head: true })
             .eq('session_id', session.id);
 
           if (countError) {
-            return { ...session, attendance_count: 0 };
+            return { ...session, attendance_count: 0, qrPayload };
           }
 
-          return { ...session, attendance_count: count || 0 };
+          return { ...session, attendance_count: count || 0, qrPayload };
         })
       );
 
       return res.status(200).json({ sessions: sessionsWithCounts });
     } catch (error) {
       return res.status(500).json({ message: 'Server error while loading session history.', error: error.message });
+    }
+  });
+
+  router.get('/available', verifyToken, async (req, res) => {
+    try {
+      if (req.user.role !== 'student') {
+        return res.status(403).json({ message: 'Only students can list available attendance sessions.' });
+      }
+      const { data: enrollments, error: enrollmentError } = await supabase
+        .from('enrollments')
+        .select('subject_id')
+        .eq('student_id', req.user.id);
+      if (enrollmentError) {
+        return res.status(500).json({ message: 'Unable to load enrolled subjects.', error: enrollmentError.message });
+      }
+      const subjectIds = [...new Set((enrollments || []).map((row) => row.subject_id))];
+      let query = supabase.from('sessions')
+        .select('id, subject, expires_at, radius_meters, requires_selfie')
+        .gt('expires_at', new Date().toISOString());
+      query = subjectIds.length
+        ? query.or(`subject_id.is.null,subject_id.in.(${subjectIds.join(',')})`)
+        : query.is('subject_id', null);
+      const { data: sessions, error } = await query.order('created_at', { ascending: false });
+      if (error) return res.status(500).json({ message: 'Unable to load available sessions.', error: error.message });
+      return res.status(200).json({ sessions: sessions || [] });
+    } catch (error) {
+      return res.status(500).json({ message: 'Unable to load available sessions.', error: error.message });
     }
   });
 

@@ -15,6 +15,10 @@ const buildAbsenteeNotification = async (sessionId) => {
     return { error: 'Session not found.' };
   }
 
+  if (!session.subject_id) {
+    return { status: 400, error: 'Absentee notifications require a session with a subject mapping.' };
+  }
+
   const { data: enrollments, error: enrollmentsError } = await supabase
     .from('enrollments')
     .select('student_id')
@@ -74,7 +78,7 @@ router.post('/session/:sessionId/absentees', verifyToken, async (req, res) => {
 
     const result = await buildAbsenteeNotification(sessionId);
     if (result.error) {
-      return res.status(500).json({ message: 'Failed to prepare notifications.', error: result.error });
+      return res.status(result.status || 500).json({ message: 'Failed to prepare notifications.', error: result.error });
     }
 
     if (result.logs.length === 0) {

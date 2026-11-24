@@ -120,11 +120,26 @@ PORT=5000
 - Role enforcement and role mismatch protection
 
 ### Teacher Features
-- Session creation with secure QR and countdown
+- Session creation with secure QR and countdown. An active session switches the
+  dashboard to a large, viewport-sized QR presentation, hiding the creation form,
+  statistics, and setup checklist. The form returns after the session ends.
+- Teacher latitude and longitude are captured automatically on opening the
+  dashboard after browser permission is granted. **Use Current Location**
+  retries the request; manual entry remains available if permission is denied,
+  location is unavailable, or the request times out. HTTPS or localhost is required.
+- Current session attendance on the dashboard with student names, roll numbers,
+  scan times, and a present count; refreshes automatically every 5 seconds.
+- Dashboard CSV download fetches the latest records for that session before
+  exporting. Active session attendance is restored after reloading the dashboard.
 - Session history with attendance counts and active/expired state
 - Active session lifecycle controls:
   - Extend session duration
-  - End session immediately
+  - **End Session** directly beside **Refresh Attendance** in the dashboard's
+    attendance report below the QR, including after reloading or reopening it.
+    Ending a session invalidates further student submissions and hides the old
+    QR/payload. Active QR payloads are restored from authenticated session history.
+- A positive whole-number radius enables geofencing and requires valid teacher
+  coordinates. Leaving the radius blank keeps the session unrestricted.
 - Attendance report analytics:
   - Total present
   - On-time count
@@ -133,11 +148,23 @@ PORT=5000
   - Add manual attendance
   - Remove attendance record
 - CSV export for report submission
+- The report page has a top-level **Download Report (CSV)** button. Optional
+  summary, absentee, or notification failures show warnings without hiding
+  attendance or its CSV export. Sessions without a subject mapping cannot track
+  absentees or send absentee notifications.
 - Live report auto-refresh (10-second sync)
 
 ### Student Features
 - QR attendance scanner with improved camera error handling
 - Manual payload fallback submit (for camera failure scenarios)
+- Select an active class session from enrolled subjects (or an unmapped open
+  session) before scanning. Use **Refresh Sessions** to update the list.
+- For sessions with a configured radius, GPS is verified by the server before
+  the scanner or manual payload entry is enabled. Movement, denied permission,
+  unavailable GPS, or failed verification locks both entry paths.
+- Submission captures fresh GPS coordinates and the server rechecks enrollment,
+  expiry, and distance for both QR and manual payload attendance. Sessions
+  without a radius do not require GPS.
 - Personal attendance history with pagination
 - Student attendance summary cards (total + current month)
 
@@ -161,16 +188,26 @@ npm install
 npm run dev
 ```
 
+For camera scanning on a phone, open the client over HTTPS. Browsers generally
+block camera access on plain HTTP network addresses; `localhost` is allowed only
+on the device running the browser. The configured API must also be reachable
+from the phone and use HTTPS when the client uses HTTPS. Allow camera permission,
+select the rear camera, and start scanning. Use the manual payload option if
+camera access is unavailable. For geofenced or selfie-required sessions, capture
+your location or attach the selfie proof before scanning.
+
 ## API Endpoints
 
 - `POST /api/auth/login`
 - `POST /api/session/create`
 - `GET /api/session/history`
 - `GET /api/session/active`
+- `GET /api/session/available` (student sessions)
 - `PATCH /api/session/:sessionId/extend`
 - `PATCH /api/session/:sessionId/end`
 - `POST /api/attendance/mark`
 - `POST /api/attendance/mark-manual`
+- `POST /api/attendance/verify-location`
 - `POST /api/attendance/manual-mark`
 - `DELETE /api/attendance/:attendanceId`
 - `GET /api/attendance/:sessionId`
@@ -200,6 +237,8 @@ npm run dev
 - Allowed roles: `teacher` and `student`.
 - Role is never accepted from client input.
 - QR payload uses HMAC signature verification; no shared secret is exposed inside QR data.
+- Browser-reported coordinates can be spoofed; the radius checks enforce the
+  submitted location but are not proof of physical presence against GPS spoofing.
 
 ## Important Supabase User Setup
 
@@ -252,6 +291,37 @@ npm run dev
 5. Set `VITE_API_URL` in frontend to deployed Render URL.
 
 ## Testing
+
+To permanently add 20 clearly labeled fictional Indian student accounts and sample
+attendance to a specific test session (using the server's configured Supabase):
+
+```bash
+cd server
+node scripts/seed-demo-students.js --session-id <session-uuid>
+```
+
+Students have roll numbers `DEMO-001` through `DEMO-020`; the original Aarav Sharma,
+Ananya Verma, and Rohan Patel accounts are reused. The command creates these
+common Indian engineering curriculum subjects and assigns them to the session's teacher:
+
+- `DEMO-DSA`: Data Structures and Algorithms (semester 3)
+- `DEMO-DBMS`: Database Management Systems (semester 4)
+- `DEMO-OS`: Operating Systems (semester 4)
+- `DEMO-CN`: Computer Networks (semester 5)
+- `DEMO-MATH3`: Engineering Mathematics III (semester 3)
+
+All 20 students are enrolled in all five subjects (section A). An unmapped target
+session is mapped to DSA; existing session mappings are preserved and students
+are also enrolled in that subject. Other sessions are not modified.
+The command is rerunnable and only reuses accounts marked by this seed. It adds
+profiles, teacher assignments, enrollments, and attendance. Sample marks use the session's
+creation time, so this also works for expired sessions. Existing attendance times
+are preserved; only these demo accounts' names and roll numbers are synchronized.
+New seed accounts use reserved `example.test` addresses and random passwords that
+are not printed or saved. Existing accounts are identified by their demo marker
+and roll number, so email/password changes made for testing are preserved on rerun.
+Never commit test passwords. Do not run the destructive fresh-schema script to seed
+an existing database.
 
 Backend API smoke test:
 

@@ -4,6 +4,7 @@ import AttendanceTable from '../components/AttendanceTable';
 import StatCard from '../components/StatCard';
 import api from '../lib/api';
 import { clearAuth } from '../lib/auth';
+import { downloadAttendanceCsv } from '../lib/attendanceCsv';
 
 function AttendanceReport() {
   const { sessionId } = useParams();
@@ -25,6 +26,9 @@ function AttendanceReport() {
   const [absentees, setAbsentees] = useState([]);
   const [notificationLogs, setNotificationLogs] = useState([]);
   const [notificationLoading, setNotificationLoading] = useState(false);
+  const [auxiliaryErrors, setAuxiliaryErrors] = useState([]);
+  const [rosterMessage, setRosterMessage] = useState('');
+  const [rosterAvailable, setRosterAvailable] = useState(false);
 
   const fetchReport = async ({ silent = false } = {}) => {
     try {
@@ -34,20 +38,26 @@ function AttendanceReport() {
         setLiveRefreshing(true);
       }
 
-      const [{ data }, { data: summaryData }] = await Promise.all([
-        api.get(`/api/attendance/${sessionId}`),
-        api.get(`/api/attendance/session/${sessionId}/summary`)
-      ]);
+      const { data } = await api.get(`/api/attendance/${sessionId}`);
       setSession(data.session);
       setRows(data.attendance);
-      setSummary(summaryData.summary || null);
+      setError('');
 
-      const [absenteeRes, notificationRes] = await Promise.all([
+      const [summaryResult, absenteeResult, notificationResult] = await Promise.allSettled([
+        api.get(`/api/attendance/session/${sessionId}/summary`),
         api.get(`/api/analytics/session/${sessionId}/absentees`),
         api.get(`/api/notifications/session/${sessionId}`)
       ]);
-      setAbsentees(absenteeRes.data.absentees || []);
-      setNotificationLogs(notificationRes.data.logs || []);
+      setSummary(summaryResult.status === 'fulfilled' ? summaryResult.value.data.summary : null);
+      setAbsentees(absenteeResult.status === 'fulfilled' ? absenteeResult.value.data.absentees : []);
+      setRosterAvailable(absenteeResult.status === 'fulfilled' && absenteeResult.value.data.rosterAvailable !== false);
+      setRosterMessage(absenteeResult.status === 'fulfilled' ? absenteeResult.value.data.message || '' : '');
+      setNotificationLogs(notificationResult.status === 'fulfilled' ? notificationResult.value.data.logs : []);
+      setAuxiliaryErrors([summaryResult, absenteeResult, notificationResult].flatMap((result, index) => {
+        if (result.status === 'fulfilled') return [];
+        const label = ['Attendance summary', 'Absentee tracking', 'Notification history'][index];
+        return [`${label}: ${result.reason.response?.data?.message || 'Unable to load this section.'}`];
+      }));
     } catch (apiError) {
       setError(apiError.response?.data?.message || 'Unable to load attendance report.');
     } finally {
@@ -60,6 +70,11 @@ function AttendanceReport() {
   };
 
   useEffect(() => {
+    setSession(null);
+    setRows([]);
+    setSummary(null);
+    setAuxiliaryErrors([]);
+    setRosterAvailable(false);
     fetchReport({ silent: false });
   }, [sessionId]);
 
@@ -136,25 +151,8 @@ function AttendanceReport() {
     });
   }, [query, rows, sortOrder]);
 
-  const escapeCsv = (value) => {
-    const content = String(value ?? '');
-    return `"${content.replaceAll('"', '""')}"`;
-  };
-
   const exportCsv = () => {
-    const header = ['Student Name', 'Roll Number', 'Time of Scan'];
-    const csvRows = filteredAndSortedRows.map((row) => [row.student_name || 'N/A', row.roll_number || 'N/A', new Date(row.marked_at).toLocaleString()]);
-    const csvContent = [header, ...csvRows].map((line) => line.map(escapeCsv).join(',')).join('\n');
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `attendance-${sessionId}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    downloadAttendanceCsv(sessionId, filteredAndSortedRows);
   };
 
   const onManualChange = (event) => {
@@ -258,6 +256,15 @@ function AttendanceReport() {
         {loading && <p className="text-slate-600">Loading report...</p>}
         {error && <p className="text-red-600">{error}</p>}
         {info && <p className="text-green-600">{info}</p>}
+        {auxiliaryErrors.map((message) => <p key={message} role="alert" className="text-sm text-amber-800">{message}</p>)}
+        <button
+          type="button"
+          onClick={() => downloadAttendanceCsv(sessionId, rows)}
+          disabled={loading || !session}
+          className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
+        >
+          Download Report (CSV)
+        </button>
 
         {summary && (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -308,16 +315,18 @@ function AttendanceReport() {
           </div>
         )}
 
-        {!loading && !error && (
+        {!loading && session && (
           <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-lg font-semibold text-slate-900">Absentee Notifications</h2>
-                <p className="text-sm text-slate-600">Current absentees: {absentees.length}</p>
+                <p className="text-sm text-slate-600">
+                  {rosterAvailable ? `Current absentees: ${absentees.length}` : rosterMessage || 'Absentee tracking is unavailable.'}
+                </p>
               </div>
               <button
                 onClick={sendAbsenteeNotifications}
-                disabled={notificationLoading}
+                disabled={notificationLoading || !rosterAvailable}
                 className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-700 disabled:opacity-60"
               >
                 {notificationLoading ? 'Queuing...' : 'Notify Absentees'}
@@ -339,7 +348,7 @@ function AttendanceReport() {
           </div>
         )}
 
-        {!loading && !error && (
+        {!loading && session && (
           <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <h2 className="text-lg font-semibold text-slate-800 mb-4">Manual Attendance Correction</h2>
             <form onSubmit={addManualAttendance} className="grid gap-3 md:grid-cols-4">
@@ -378,7 +387,7 @@ function AttendanceReport() {
           </div>
         )}
 
-        {!loading && !error && (
+        {!loading && session && (
           <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div className="flex w-full flex-col gap-3 md:flex-row">
@@ -408,7 +417,7 @@ function AttendanceReport() {
           </div>
         )}
 
-        {!loading && !error && <AttendanceTable rows={filteredAndSortedRows} onRemove={removeAttendance} removingId={removingId} />}
+        {!loading && session && <AttendanceTable rows={filteredAndSortedRows} onRemove={removeAttendance} removingId={removingId} />}
       </main>
     </div>
   );

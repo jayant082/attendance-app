@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import QRGenerator from '../components/QRGenerator';
 import StatCard from '../components/StatCard';
+import SessionAttendance from '../components/SessionAttendance';
 import api from '../lib/api';
 import { clearAuth, getStoredUser } from '../lib/auth';
 
@@ -15,6 +16,10 @@ function TeacherDashboard() {
   const [timetableSlotId, setTimetableSlotId] = useState('');
   const [latitude, setLatitude] = useState('');
   const [longitude, setLongitude] = useState('');
+  const [locating, setLocating] = useState(false);
+  const [locationMessage, setLocationMessage] = useState('');
+  const [locationError, setLocationError] = useState('');
+  const locationRequestId = useRef(0);
   const [radiusMeters, setRadiusMeters] = useState('');
   const [requiresSelfie, setRequiresSelfie] = useState(false);
   const [sessionData, setSessionData] = useState(null);
@@ -24,20 +29,59 @@ function TeacherDashboard() {
   const [statsLoading, setStatsLoading] = useState(true);
   const [history, setHistory] = useState([]);
   const [actionLoading, setActionLoading] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(0);
+  const [now, setNow] = useState(Date.now);
 
-  const expiresAt = useMemo(() => sessionData?.session?.expires_at || null, [sessionData]);
+  const activeSession = [sessionData?.session, ...history].find((item) => item && new Date(item.expires_at).getTime() > Date.now());
+  const activeQrPayload = activeSession?.id === sessionData?.session?.id ? sessionData?.qrPayload : activeSession?.qrPayload;
+  const expiresAt = activeSession?.expires_at || sessionData?.session?.expires_at || null;
+  const timeLeft = expiresAt ? Math.max(0, Math.ceil((new Date(expiresAt).getTime() - now) / 1000)) : 0;
 
-  useEffect(() => {
-    if (!expiresAt) {
-      setTimeLeft(0);
+  const refreshLocation = useCallback(() => {
+    const requestId = ++locationRequestId.current;
+    setLocationError('');
+    setLocationMessage('');
+
+    if (!window.isSecureContext || !navigator.geolocation) {
+      setLocationError('Automatic location requires HTTPS or localhost and a browser with location support. You can enter coordinates manually.');
       return;
     }
 
-    const intervalId = setInterval(() => {
-      const diffMs = new Date(expiresAt).getTime() - Date.now();
-      setTimeLeft(Math.max(0, Math.floor(diffMs / 1000)));
-    }, 1000);
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        if (requestId !== locationRequestId.current) return;
+        setLatitude(String(position.coords.latitude));
+        setLongitude(String(position.coords.longitude));
+        setLocationMessage('Current location captured. You can edit the coordinates if needed.');
+        setLocating(false);
+      },
+      (locationFailure) => {
+        if (requestId !== locationRequestId.current) return;
+        const messages = {
+          1: 'Location permission denied. Allow location access in your browser and retry, or enter coordinates manually.',
+          2: 'Your location is unavailable. Retry or enter coordinates manually.',
+          3: 'Location request timed out. Retry or enter coordinates manually.'
+        };
+        setLocationError(messages[locationFailure.code] || 'Unable to capture your location. Retry or enter coordinates manually.');
+        setLocating(false);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  }, []);
+
+  useEffect(() => {
+    if (statsLoading || activeSession) return;
+    refreshLocation();
+    return () => { locationRequestId.current += 1; };
+  }, [refreshLocation, statsLoading, activeSession?.id]);
+
+  useEffect(() => {
+    if (!expiresAt) {
+      return;
+    }
+
+    setNow(Date.now());
+    const intervalId = setInterval(() => setNow(Date.now()), 1000);
 
     return () => clearInterval(intervalId);
   }, [expiresAt]);
@@ -51,8 +95,8 @@ function TeacherDashboard() {
     try {
       const { data } = await api.get('/api/session/history');
       setHistory(data.sessions || []);
-    } catch (_error) {
-      setHistory([]);
+    } catch (apiError) {
+      setError(apiError.response?.data?.message || 'Unable to load sessions. Refresh the dashboard to restore session controls.');
     } finally {
       setStatsLoading(false);
     }
@@ -105,7 +149,7 @@ function TeacherDashboard() {
   };
 
   const extendCurrentSession = async (extraMinutes) => {
-    if (!sessionData?.session?.id) {
+    if (!activeSession?.id) {
       return;
     }
 
@@ -114,7 +158,7 @@ function TeacherDashboard() {
     setInfo('');
 
     try {
-      const { data } = await api.patch(`/api/session/${sessionData.session.id}/extend`, { extraMinutes });
+      const { data } = await api.patch(`/api/session/${activeSession.id}/extend`, { extraMinutes });
       setSessionData((prev) => ({
         ...prev,
         session: data.session,
@@ -130,7 +174,7 @@ function TeacherDashboard() {
   };
 
   const endCurrentSession = async () => {
-    if (!sessionData?.session?.id) {
+    if (!activeSession?.id) {
       return;
     }
 
@@ -143,11 +187,9 @@ function TeacherDashboard() {
     setInfo('');
 
     try {
-      const { data } = await api.patch(`/api/session/${sessionData.session.id}/end`);
-      setSessionData((prev) => ({
-        ...prev,
-        session: data.session
-      }));
+      const { data } = await api.patch(`/api/session/${activeSession.id}/end`);
+      setSessionData({ session: data.session, qrPayload: null });
+      setHistory((previous) => previous.map((item) => item.id === activeSession.id ? { ...item, ...data.session } : item));
       setInfo(data.message || 'Session ended successfully.');
       fetchHistory();
     } catch (apiError) {
@@ -158,15 +200,15 @@ function TeacherDashboard() {
   };
 
   const copyPayload = async () => {
-    if (!sessionData?.qrPayload) {
+    if (!activeQrPayload) {
       return;
     }
 
     try {
-      await navigator.clipboard.writeText(JSON.stringify(sessionData.qrPayload));
+      await navigator.clipboard.writeText(JSON.stringify(activeQrPayload));
       setInfo('QR payload copied. You can share this with students if camera scan fails.');
     } catch (_error) {
-      setError('Unable to copy payload. Please copy manually from browser inspect/view.');
+      setError('Unable to copy payload. Allow clipboard access in your browser and retry.');
     }
   };
 
@@ -174,16 +216,17 @@ function TeacherDashboard() {
   const seconds = String(timeLeft % 60).padStart(2, '0');
   const activeSessions = history.filter((item) => new Date(item.expires_at).getTime() > Date.now()).length;
   const totalAttendance = history.reduce((sum, item) => sum + (item.attendance_count || 0), 0);
+  const currentSessionId = activeSession?.id || sessionData?.session?.id;
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100">
       <header className="border-b border-slate-200 bg-white/90 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-4">
           <div>
             <h1 className="text-xl font-bold text-slate-900">Teacher Dashboard</h1>
             <p className="text-sm text-slate-600">Welcome, {user?.email}</p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Link to="/teacher/analytics" className="rounded-lg bg-emerald-600 px-4 py-2 text-white text-sm hover:bg-emerald-700">
               Analytics
             </Link>
@@ -198,17 +241,25 @@ function TeacherDashboard() {
       </header>
 
       <main className="mx-auto max-w-6xl space-y-6 px-4 py-6">
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {!activeSession && <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <StatCard label="Total Sessions" value={statsLoading ? '...' : history.length} hint="All created classes" />
           <StatCard label="Active Sessions" value={statsLoading ? '...' : activeSessions} hint="Not expired yet" />
           <StatCard label="Total Marked" value={statsLoading ? '...' : totalAttendance} hint="Combined attendance" />
           <StatCard label="Current Timer" value={`${minutes}:${seconds}`} hint="For latest session" />
-        </div>
+        </div>}
 
         {info && <p className="text-sm font-medium text-emerald-700">{info}</p>}
         {error && <p className="text-sm font-medium text-red-600">{error}</p>}
 
-        <div className="grid gap-6 lg:grid-cols-2">
+        {activeSession && (
+          <section aria-label="Active session QR" className="flex min-h-[calc(100vh-8rem)] flex-col items-center justify-center gap-4 rounded-2xl bg-white p-2 text-center">
+            <h2 className="text-2xl font-semibold text-slate-900">{activeSession.subject}</h2>
+            {activeQrPayload ? <QRGenerator payload={activeQrPayload} presentation /> : <p role="alert" className="text-red-600">Unable to load the active QR. Refresh the dashboard to try again.</p>}
+            <p className="text-lg font-medium text-indigo-700">Time remaining: {minutes}:{seconds}</p>
+          </section>
+        )}
+
+        {!activeSession && <div className="grid gap-6 lg:grid-cols-2">
           <div className="rounded-2xl border border-slate-200 bg-white/95 p-6 shadow-sm backdrop-blur">
             <h2 className="mb-4 text-lg font-semibold text-slate-900">Create Attendance Session</h2>
           <form onSubmit={createSession} className="space-y-4">
@@ -263,23 +314,54 @@ function TeacherDashboard() {
 
             <div className="grid gap-3 md:grid-cols-3">
               <input
+                aria-label="Latitude"
+                type="number"
+                min="-90"
+                max="90"
+                step="any"
+                required={Boolean(radiusMeters) && !timetableSlotId}
                 value={latitude}
                 onChange={(event) => setLatitude(event.target.value)}
+                disabled={locating}
                 placeholder="Latitude"
                 className="rounded-lg border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               />
               <input
+                aria-label="Longitude"
+                type="number"
+                min="-180"
+                max="180"
+                step="any"
+                required={Boolean(radiusMeters) && !timetableSlotId}
                 value={longitude}
                 onChange={(event) => setLongitude(event.target.value)}
+                disabled={locating}
                 placeholder="Longitude"
                 className="rounded-lg border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               />
               <input
+                type="number"
+                min="1"
+                step="1"
+                aria-label="Radius meters (optional)"
                 value={radiusMeters}
                 onChange={(event) => setRadiusMeters(event.target.value)}
                 placeholder="Radius meters"
                 className="rounded-lg border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               />
+            </div>
+            <p className="text-xs text-slate-600">Set a radius in meters to require student location verification. Leave it blank for an unrestricted session.</p>
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={refreshLocation}
+                disabled={locating}
+                className="rounded-lg bg-slate-700 px-3 py-2 text-sm text-white hover:bg-slate-800 disabled:opacity-60"
+              >
+                {locating ? 'Fetching Location...' : 'Use Current Location'}
+              </button>
+              {locationMessage && <p role="status" className="text-sm text-emerald-700">{locationMessage}</p>}
+              {locationError && <p role="alert" className="text-sm text-amber-800">{locationError}</p>}
             </div>
 
             <label className="flex items-center gap-2 text-sm text-slate-700">
@@ -289,7 +371,7 @@ function TeacherDashboard() {
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || locating}
               className="w-full rounded-lg bg-indigo-600 px-4 py-2 text-white font-medium hover:bg-indigo-700 disabled:opacity-60"
             >
               {loading ? 'Creating...' : 'Generate Session QR'}
@@ -307,19 +389,6 @@ function TeacherDashboard() {
               <p className="text-sm text-indigo-800">
                 Countdown: <span className="font-semibold text-lg text-indigo-700">{minutes}:{seconds}</span>
               </p>
-              <div className="rounded-lg bg-white p-3 border border-indigo-100">
-                <p className="text-xs font-semibold text-slate-700 mb-2">📋 If QR camera scan fails, share this payload:</p>
-                <p className="text-xs font-mono text-slate-600 break-all bg-slate-50 p-2 rounded border border-slate-200">
-                  {JSON.stringify(sessionData.qrPayload)}
-                </p>
-                <button
-                  type="button"
-                  onClick={copyPayload}
-                  className="mt-2 w-full rounded-lg bg-slate-700 px-3 py-2 text-xs font-medium text-white hover:bg-slate-800"
-                >
-                  Copy Payload to Share
-                </button>
-              </div>
               <div className="flex flex-wrap gap-2">
                 <Link
                   to={`/report/${sessionData.session.id}`}
@@ -327,31 +396,12 @@ function TeacherDashboard() {
                 >
                   View Attendance Report
                 </Link>
-                <button
-                  type="button"
-                  onClick={() => extendCurrentSession(5)}
-                  disabled={actionLoading}
-                  className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
-                >
-                  +5 min
-                </button>
-                <button
-                  type="button"
-                  onClick={endCurrentSession}
-                  disabled={actionLoading}
-                  className="rounded-lg bg-rose-600 px-3 py-2 text-sm font-medium text-white hover:bg-rose-700 disabled:opacity-60"
-                >
-                  End Session
-                </button>
               </div>
             </div>
           )}
         </div>
 
           <div className="space-y-4">
-            <div className="flex items-start justify-center">
-              <QRGenerator payload={sessionData?.qrPayload} />
-            </div>
             <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <h3 className="text-sm font-semibold text-slate-900">Production Readiness Checklist</h3>
               <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-slate-600">
@@ -361,7 +411,15 @@ function TeacherDashboard() {
               </ul>
             </div>
           </div>
-        </div>
+        </div>}
+        {currentSessionId && <SessionAttendance
+          key={currentSessionId}
+          sessionId={currentSessionId}
+          onEndSession={activeSession ? endCurrentSession : undefined}
+          onExtendSession={activeSession ? () => extendCurrentSession(5) : undefined}
+          onCopyPayload={activeQrPayload ? copyPayload : undefined}
+          actionLoading={actionLoading}
+        />}
       </main>
     </div>
   );

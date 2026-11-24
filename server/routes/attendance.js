@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const supabase = require('../lib/supabase');
 const verifyToken = require('../middleware/verifyToken');
+const { validateLocation } = require('../lib/geofence');
 
 const router = express.Router();
 
@@ -34,36 +35,9 @@ const parseIsoTimestamp = (value) => {
   return Date.parse(hasTimezone ? trimmed : `${trimmed}Z`);
 };
 
-const toRadians = (value) => (value * Math.PI) / 180;
-
-const distanceInMeters = (lat1, lon1, lat2, lon2) => {
-  const earthRadius = 6371000;
-  const dLat = toRadians(lat2 - lat1);
-  const dLon = toRadians(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return earthRadius * c;
-};
-
 const logIncident = async (payload) => {
-  await supabase.from('incident_logs').insert(payload);
-};
-
-const validateLocation = (session, studentLatitude, studentLongitude) => {
-  if (
-    session.latitude === null ||
-    session.longitude === null ||
-    session.radius_meters === null ||
-    studentLatitude === undefined ||
-    studentLongitude === undefined
-  ) {
-    return { ok: true, distance: null };
-  }
-
-  const distance = distanceInMeters(Number(session.latitude), Number(session.longitude), Number(studentLatitude), Number(studentLongitude));
-  return { ok: distance <= Number(session.radius_meters), distance };
+  const { error } = await supabase.from('incident_logs').insert(payload);
+  if (error) console.error('Unable to log geofence violation:', error.message);
 };
 
 const registerDevice = async (studentId, deviceId) => {
@@ -100,33 +74,13 @@ const ensureEnrolled = async (user, session) => {
     .maybeSingle();
 
   if (error) {
-    return false;
+    throw new Error(`Failed to validate subject enrollment: ${error.message}`);
   }
 
   return Boolean(data);
 };
 
-const markAttendanceFromPayload = async (user, parsedPayload, extraData = {}) => {
-  const { sessionId, expiresAt, signature } = parsedPayload;
-
-  if (!sessionId || !expiresAt || !signature) {
-    return { status: 400, body: { message: 'QR payload is missing required fields.' } };
-  }
-
-  const qrExpiryMs = parseIsoTimestamp(expiresAt);
-  if (Number.isNaN(qrExpiryMs)) {
-    return { status: 400, body: { message: 'Invalid expiry timestamp in QR payload.' } };
-  }
-
-  if (qrExpiryMs < Date.now()) {
-    return { status: 410, body: { message: 'Session has expired. Attendance cannot be marked.' } };
-  }
-
-  const expectedSignature = signQrPayload(sessionId, expiresAt);
-  if (!safeCompare(signature, expectedSignature)) {
-    return { status: 401, body: { message: 'QR secret verification failed.' } };
-  }
-
+const getStudentSession = async (user, sessionId) => {
   const { data: session, error: sessionError } = await supabase
     .from('sessions')
     .select('id, subject_id, teacher_id, expires_at, latitude, longitude, radius_meters, requires_selfie')
@@ -142,7 +96,7 @@ const markAttendanceFromPayload = async (user, parsedPayload, extraData = {}) =>
     return { status: 500, body: { message: 'Invalid expiry timestamp in session record.' } };
   }
 
-  if (sessionExpiryMs < Date.now()) {
+  if (sessionExpiryMs <= Date.now()) {
     return { status: 410, body: { message: 'Session expired based on server record.' } };
   }
 
@@ -150,20 +104,46 @@ const markAttendanceFromPayload = async (user, parsedPayload, extraData = {}) =>
   if (!isEnrolled) {
     return { status: 403, body: { message: 'You are not enrolled for this subject.' } };
   }
+  return { session };
+};
+
+const markAttendanceFromPayload = async (user, parsedPayload, extraData = {}) => {
+  if (!parsedPayload || typeof parsedPayload !== 'object') {
+    return { status: 400, body: { message: 'Invalid QR payload format.' } };
+  }
+  const { sessionId, expiresAt, signature } = parsedPayload;
+  if (!sessionId || !expiresAt || typeof signature !== 'string') {
+    return { status: 400, body: { message: 'QR payload is missing required fields.' } };
+  }
+  const qrExpiryMs = parseIsoTimestamp(expiresAt);
+  if (Number.isNaN(qrExpiryMs)) {
+    return { status: 400, body: { message: 'Invalid expiry timestamp in QR payload.' } };
+  }
+  if (qrExpiryMs <= Date.now()) {
+    return { status: 410, body: { message: 'Session has expired. Attendance cannot be marked.' } };
+  }
+  if (!safeCompare(signature, signQrPayload(sessionId, expiresAt))) {
+    return { status: 401, body: { message: 'QR secret verification failed.' } };
+  }
+  const context = await getStudentSession(user, sessionId);
+  if (!context.session) return context;
+  const { session } = context;
 
   const { latitude, longitude, deviceId, selfieHash } = extraData;
 
   const locationStatus = validateLocation(session, latitude, longitude);
   if (!locationStatus.ok) {
-    await logIncident({
-      session_id: session.id,
-      student_id: user.id,
-      event_type: 'geofence_violation',
-      details: { latitude, longitude, distanceMeters: Math.round(locationStatus.distance || 0) }
-    });
+    if (locationStatus.status === 403) {
+      await logIncident({
+        session_id: session.id,
+        student_id: user.id,
+        event_type: 'geofence_violation',
+        details: { latitude, longitude, distanceMeters: Math.ceil(locationStatus.distance) }
+      });
+    }
     return {
-      status: 403,
-      body: { message: `You are outside the allowed attendance radius (${Math.round(locationStatus.distance || 0)}m).` }
+      status: locationStatus.status,
+      body: { message: locationStatus.message }
     };
   }
 
@@ -212,6 +192,25 @@ const markAttendanceFromPayload = async (user, parsedPayload, extraData = {}) =>
 
   return { status: 201, body: { message: 'Attendance marked successfully.', attendance: inserted } };
 };
+
+router.post('/verify-location', verifyToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'student') {
+      return res.status(403).json({ message: 'Only students can verify attendance location.' });
+    }
+    const { sessionId, latitude, longitude } = req.body;
+    if (!sessionId || typeof sessionId !== 'string') {
+      return res.status(400).json({ message: 'Session ID is required.' });
+    }
+    const context = await getStudentSession(req.user, sessionId);
+    if (!context.session) return res.status(context.status).json(context.body);
+    const result = validateLocation(context.session, latitude, longitude);
+    if (!result.ok) return res.status(result.status).json({ message: result.message });
+    return res.status(200).json({ verified: true, sessionId, distanceMeters: result.distance });
+  } catch (error) {
+    return res.status(500).json({ message: 'Unable to verify attendance location.', error: error.message });
+  }
+});
 
 router.post('/mark', verifyToken, async (req, res) => {
   try {
