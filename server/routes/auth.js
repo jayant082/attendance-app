@@ -65,7 +65,11 @@ router.post('/request-password-reset', async (req, res) => {
       return res.status(400).json({ message: 'Email is required.' });
     }
 
-    const redirectTo = process.env.CLIENT_URL || 'http://localhost:5173';
+    let redirectTo = process.env.CLIENT_URL;
+    if (!redirectTo && process.env.VERCEL_URL) {
+      redirectTo = `https://${process.env.VERCEL_URL}`;
+    }
+    redirectTo = redirectTo || 'http://localhost:5173';
 
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo

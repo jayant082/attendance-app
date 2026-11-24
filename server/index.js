@@ -20,7 +20,19 @@ const rosterRoutes = require('./routes/roster');
 
 const app = express();
 
-const allowedOrigin = process.env.CLIENT_URL || 'http://localhost:5173';
+const getClientUrl = () => {
+  if (process.env.CLIENT_URL) return process.env.CLIENT_URL;
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  return 'http://localhost:5173';
+};
+
+const allowedOrigin = getClientUrl();
+const allowedOrigins = [
+  allowedOrigin,
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null
+].filter(Boolean);
 
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -41,7 +53,7 @@ const authLimiter = rateLimit({
 app.use(helmet());
 app.use(
   cors({
-    origin: allowedOrigin,
+    origin: allowedOrigins,
     credentials: true
   })
 );
